@@ -1,0 +1,304 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentcontract.github.io/spec/schema/contract.schema.json",
+  "title": "AgentContract",
+  "description": "Behavioral contract for an AI agent. AgentContract Specification v0.1.0",
+  "type": "object",
+  "required": ["agent", "spec-version", "version"],
+  "additionalProperties": false,
+  "properties": {
+    "agent": {
+      "type": "string",
+      "description": "Name of the agent this contract governs.",
+      "minLength": 1
+    },
+    "spec-version": {
+      "type": "string",
+      "description": "AgentContract specification version this contract targets.",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(-[a-zA-Z0-9.-]+)?$",
+      "examples": ["0.1.0", "1.0.0"]
+    },
+    "version": {
+      "type": "string",
+      "description": "Semantic version of this contract document.",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(-[a-zA-Z0-9.-]+)?$"
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable description of this contract."
+    },
+    "author": {
+      "type": "string",
+      "description": "Author of this contract."
+    },
+    "created": {
+      "type": "string",
+      "format": "date",
+      "description": "ISO 8601 date this contract was created."
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Tags for discovery and filtering."
+    },
+    "extends": {
+      "type": "string",
+      "description": "Relative path or URL of a parent contract to inherit from."
+    },
+    "must": {
+      "type": "array",
+      "description": "Obligations: clauses that MUST be satisfied in every run.",
+      "items": { "$ref": "#/$defs/clause" }
+    },
+    "must_not": {
+      "type": "array",
+      "description": "Prohibitions: clauses that MUST NOT occur in any run.",
+      "items": { "$ref": "#/$defs/clause" }
+    },
+    "can": {
+      "type": "array",
+      "description": "Permissions: explicit allowlist of agent capabilities (informational).",
+      "items": { "type": "string" }
+    },
+    "requires": {
+      "type": "array",
+      "description": "Preconditions: conditions that MUST be true before the agent runs.",
+      "items": { "$ref": "#/$defs/precondition_clause" }
+    },
+    "ensures": {
+      "type": "array",
+      "description": "Postconditions: conditions that MUST be true after the agent runs.",
+      "items": { "$ref": "#/$defs/clause" }
+    },
+    "invariant": {
+      "type": "array",
+      "description": "Invariants: conditions that MUST hold throughout the entire run.",
+      "items": { "$ref": "#/$defs/clause" }
+    },
+    "assert": {
+      "type": "array",
+      "description": "Named, testable assertions with explicit check types.",
+      "items": { "$ref": "#/$defs/assertion" }
+    },
+    "limits": {
+      "type": "object",
+      "description": "Quantitative hard limits enforced on every run.",
+      "additionalProperties": false,
+      "properties": {
+        "max_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum number of output tokens."
+        },
+        "max_input_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum number of input tokens."
+        },
+        "max_latency_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum run duration in milliseconds."
+        },
+        "max_cost_usd": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Maximum API cost per run in USD."
+        },
+        "max_tool_calls": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum number of tool/function calls."
+        },
+        "max_steps": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum reasoning steps for multi-step agents."
+        }
+      }
+    },
+    "on_violation": {
+      "type": "object",
+      "description": "Violation handlers. 'default' is required; per-assertion overrides are optional.",
+      "required": ["default"],
+      "properties": {
+        "default": { "$ref": "#/$defs/violation_action" }
+      },
+      "additionalProperties": { "$ref": "#/$defs/violation_action" }
+    }
+  },
+  "$defs": {
+    "violation_action": {
+      "type": "string",
+      "enum": ["warn", "block", "rollback", "halt_and_alert"],
+      "description": "Action to take when a clause is violated."
+    },
+    "judge_type": {
+      "type": "string",
+      "enum": ["deterministic", "llm"],
+      "description": "How to evaluate this clause. 'deterministic' uses no LLM; 'llm' invokes a judge model."
+    },
+    "clause": {
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "Natural language clause (shorthand form).",
+          "minLength": 1
+        },
+        {
+          "type": "object",
+          "required": ["text"],
+          "additionalProperties": false,
+          "properties": {
+            "text": {
+              "type": "string",
+              "description": "Natural language clause text.",
+              "minLength": 1
+            },
+            "judge": { "$ref": "#/$defs/judge_type" },
+            "description": {
+              "type": "string",
+              "description": "Human-readable explanation of this clause."
+            }
+          }
+        }
+      ]
+    },
+    "precondition_clause": {
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "Natural language precondition (shorthand form).",
+          "minLength": 1
+        },
+        {
+          "type": "object",
+          "required": ["text"],
+          "additionalProperties": false,
+          "properties": {
+            "text": {
+              "type": "string",
+              "description": "Natural language precondition text.",
+              "minLength": 1
+            },
+            "judge": { "$ref": "#/$defs/judge_type" },
+            "on_fail": {
+              "type": "string",
+              "enum": ["block", "warn"],
+              "default": "block",
+              "description": "Action when precondition fails. Default: block."
+            },
+            "description": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "assertion": {
+      "type": "object",
+      "required": ["name", "type"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Unique name for this assertion.",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of what this assertion checks."
+        },
+        "type": {
+          "type": "string",
+          "enum": ["pattern", "schema", "llm", "cost", "latency", "custom"],
+          "description": "Assertion check type."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "pattern" } } },
+          "then": {
+            "properties": {
+              "must_not_match": {
+                "type": "string",
+                "description": "Regex pattern that must NOT appear in the output."
+              },
+              "must_match": {
+                "type": "string",
+                "description": "Regex pattern that MUST appear in the output."
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "schema" } } },
+          "then": {
+            "required": ["schema"],
+            "properties": {
+              "schema": {
+                "type": "object",
+                "description": "JSON Schema the output must conform to."
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "llm" } } },
+          "then": {
+            "required": ["prompt", "pass_when"],
+            "properties": {
+              "prompt": {
+                "type": "string",
+                "description": "Prompt sent to the judge model."
+              },
+              "pass_when": {
+                "type": "string",
+                "description": "Expected judge response for a passing assertion."
+              },
+              "model": {
+                "type": "string",
+                "description": "Override judge model for this assertion."
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "cost" } } },
+          "then": {
+            "required": ["max_usd"],
+            "properties": {
+              "max_usd": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Maximum API cost in USD."
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "latency" } } },
+          "then": {
+            "required": ["max_ms"],
+            "properties": {
+              "max_ms": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Maximum run duration in milliseconds."
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "custom" } } },
+          "then": {
+            "required": ["plugin"],
+            "properties": {
+              "plugin": {
+                "type": "string",
+                "description": "Name of the custom validator plugin."
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

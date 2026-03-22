@@ -134,6 +134,18 @@ agentcontract/agentcontract-action ← GitHub Action
 
 ---
 
+## Show Your Agent Is Governed
+
+Add this badge to your project's README:
+
+```markdown
+[![AgentContract](https://img.shields.io/badge/AgentContract-enforced-2ea44f)](https://github.com/agentcontract/spec)
+```
+
+It renders as: [![AgentContract](https://img.shields.io/badge/AgentContract-enforced-2ea44f)](https://github.com/agentcontract/spec)
+
+---
+
 ## Getting Started
 
 1. Read the [specification](SPEC.md)
@@ -142,8 +154,10 @@ agentcontract/agentcontract-action ← GitHub Action
    ```bash
    pip install agentcontract        # Python
    npm install @agentcontract/core  # TypeScript
+   cargo add agentcontract          # Rust
    ```
 4. Browse the [community contracts library](https://github.com/agentcontract/contracts)
+5. **GitHub Action:** [`agentcontract/agentcontract-action@v1`](https://github.com/marketplace/actions/agentcontract) — validate in CI/CD
 
 ---
 

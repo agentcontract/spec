@@ -1,8 +1,9 @@
 # AgentContract Specification
 
-**Version:** 0.1.0-draft
+**Version:** 0.2.0-draft
 **Status:** Draft — seeking community feedback
 **Created:** 2026-03-21
+**Updated:** 2026-04-19
 **License:** Apache 2.0
 
 ---
@@ -25,6 +26,7 @@
    - 5.9 Boundaries (`limits`)
    - 5.10 Violation Handlers (`on_violation`)
    - 5.11 Contract Inheritance (`extends`)
+   - 5.12 Outcome Verification (`outcomes`)
 6. [Validation Semantics](#6-validation-semantics)
    - 6.1 Evaluation Order
    - 6.2 Deterministic Checks
@@ -434,6 +436,125 @@ must_not:
 
 ---
 
+### 5.12 Outcome Verification (`outcomes`)
+
+Outcome clauses verify that the agent's actions produced the intended **effect in the world** — not just that the output is well-formed. Where `ensures` checks the agent's output, `outcomes` checks external or structured state after the run completes.
+
+```yaml
+outcomes:
+  - name: <string>              # REQUIRED. Unique name. Pattern: [a-z][a-z0-9_]*
+    description: <string>       # RECOMMENDED.
+    accessor:
+      type: output_field | tool_result | state
+      # For type: output_field — extract a field from the agent's structured output
+      field: <string>           # REQUIRED. JSONPath expression into output.
+      # For type: tool_result — extract a value from a tool call result made during the run
+      tool: <string>            # REQUIRED. Tool name.
+      call_index: <integer>     # OPTIONAL. Which call (0-indexed). Default: last call to this tool.
+      field: <string>           # OPTIONAL. JSONPath into the tool result.
+      # For type: state — query an external state provider
+      query: <string>           # REQUIRED. State path or query expression (provider-defined syntax).
+      provider: <string>        # OPTIONAL. Named provider registered with the implementation.
+      # Timing — applies to all accessor types
+      at: post-run | deferred   # Default: post-run
+      window_ms: <integer>      # REQUIRED when at: deferred. Max ms before outcome is marked failed.
+    predicate:
+      type: exact-match | llm-with-rubric | pattern | schema
+      # For type: exact-match
+      expected: <value>         # REQUIRED. Exact value (string, number, or boolean).
+      # For type: llm-with-rubric
+      rubric: <string>          # REQUIRED. Natural language pass criterion for the judge.
+      judge_model: fast | <model-id>  # OPTIONAL. Default: fast (haiku-class model).
+      # For type: pattern
+      must_match: <string>      # Regex that MUST match the string-coerced accessed value.
+      must_not_match: <string>  # Regex that MUST NOT match the string-coerced accessed value.
+      # For type: schema
+      schema: <object>          # JSON Schema the accessed value must conform to.
+    on_fail: warn | block | rollback | halt_and_alert  # OPTIONAL. Overrides on_violation.default.
+```
+
+**Accessor types:**
+
+| Type | Description | External I/O |
+|------|-------------|-------------|
+| `output_field` | Extracts a field from the agent's structured output via JSONPath | No |
+| `tool_result` | Extracts a value from a specific tool call result recorded during the run | No |
+| `state` | Queries a named external state provider (database, API, message queue, etc.) | Yes |
+
+**Predicate types:**
+
+| Type | Evaluation | Notes |
+|------|-----------|-------|
+| `exact-match` | Deterministic equality | Strict string / number / boolean match after type coercion |
+| `llm-with-rubric` | LLM judge evaluates against rubric | Uses `fast` judge model unless overridden |
+| `pattern` | Regex on string-coerced value | Deterministic |
+| `schema` | JSON Schema on accessed value | Deterministic |
+
+**Examples:**
+
+```yaml
+# Verify structured output field — no external call
+outcomes:
+  - name: refund_processed
+    description: Order status must be refunded in the returned payload
+    accessor:
+      type: output_field
+      field: "$.order.status"
+      at: post-run
+    predicate:
+      type: exact-match
+      expected: "refunded"
+    on_fail: block
+
+# Verify a tool call succeeded — inspects recorded tool result
+  - name: ticket_closed
+    description: update_ticket tool must have set status to resolved
+    accessor:
+      type: tool_result
+      tool: update_ticket
+      field: "$.status"
+      at: post-run
+    predicate:
+      type: exact-match
+      expected: "resolved"
+    on_fail: block
+
+# Verify world state via rubric — LLM judge on tool result
+  - name: issue_resolved
+    accessor:
+      type: tool_result
+      tool: update_ticket
+      at: post-run
+    predicate:
+      type: llm-with-rubric
+      rubric: "The ticket status indicates the user's stated problem was fully addressed"
+      judge_model: fast
+
+# Deferred verification — email delivery via external state provider
+  - name: confirmation_email_sent
+    description: Confirmation email must reach the delivery queue within 30 seconds
+    accessor:
+      type: state
+      query: "email_queue.status"
+      provider: messaging
+      at: deferred
+      window_ms: 30000
+    predicate:
+      type: exact-match
+      expected: "dispatched"
+    on_fail: warn
+```
+
+**Deferred outcome verification:**
+
+When `at: deferred`, the run completes and the initial audit entry records the outcome as `pending`. The implementation MUST schedule verification to execute within `window_ms` milliseconds. When verification completes, the implementation MUST append an `outcome_resolution` audit entry referencing the original `run_id` (see Section 9). If `window_ms` elapses without a result, the outcome MUST be recorded as `failed`.
+
+Implementations MAY support push-based resolution via a webhook or callback interface instead of polling.
+
+> **Design note:** `outcomes` and `ensures` are complementary. Use `ensures` to check what the agent *said*; use `outcomes` to check what the agent *did*. An agent can produce a perfectly formatted response (`ensures` passes) while failing to change any state (`outcomes` fails).
+
+---
+
 ## 6. Validation Semantics
 
 ### 6.1 Evaluation Order
@@ -445,9 +566,13 @@ A compliant implementation MUST evaluate clauses in the following order:
 3. `limits` — evaluated **after** the run completes
 4. `assert` — evaluated **after** the run, in declaration order
 5. `must` and `must_not` — evaluated **after** the run
-6. `ensures` (postconditions) — evaluated **after** all other clauses
+6. `ensures` (postconditions) — evaluated **after** all other clauses, on the **output**
+7. `outcomes` (`at: post-run`) — evaluated **after** `ensures`, verify world state synchronously
+8. `outcomes` (`at: deferred`) — scheduled for asynchronous verification within `window_ms`
 
 If a `requires` clause fails, the agent MUST NOT run, and the implementation MUST return a `ContractPreconditionError`.
+
+Deferred outcomes (step 8) do not block the caller. The run result is returned immediately with `outcome_status: pending` for each deferred outcome. Resolution is recorded in a follow-up audit entry (see Section 9).
 
 ### 6.2 Deterministic Checks
 
@@ -500,6 +625,8 @@ A **compliant implementation** MUST:
 7. Support deterministic check types: `pattern`, `schema`, `cost`, `latency`
 8. Expose a programmatic API for wrapping agents (decorator or middleware pattern)
 9. Expose a CLI for offline validation: `agentcontract validate <contract> <run-log>`
+10. Support `outcomes` with `output_field` and `tool_result` accessor types
+11. Write `outcome_status: pending` in the audit entry for deferred outcomes, and append an `outcome_resolution` entry upon completion
 
 A compliant implementation SHOULD:
 
@@ -508,12 +635,15 @@ A compliant implementation SHOULD:
 - Support the GitHub Action integration
 - Provide structured output (JSON) for all violation reports
 - Support custom validator plugins
+- Support `outcomes` with `state` accessor type and named external providers
+- Support deferred outcome verification (`at: deferred`) with polling or push-based resolution
 
 A compliant implementation MAY:
 
 - Support real-time streaming validation
 - Support `rollback` via side-effect undo
 - Provide a web dashboard
+- Expose a webhook interface for push-based deferred outcome resolution
 
 ---
 
@@ -540,8 +670,11 @@ Every run MUST produce an audit entry. Compliant implementations MUST write audi
 
 ### Audit Entry Schema
 
+**Run entry** — written once per run, immediately on completion:
+
 ```json
 {
+  "entry_type": "run",
   "run_id": "string (UUID v4)",
   "agent": "string",
   "contract": "string (path or URI)",
@@ -563,10 +696,47 @@ Every run MUST produce an audit entry. Compliant implementations MUST write audi
       "details": "string"
     }
   ],
-  "outcome": "pass | violation",
+  "outcome_results": [
+    {
+      "name": "string",
+      "status": "pass | failed | pending",
+      "accessor_type": "output_field | tool_result | state",
+      "predicate_type": "exact-match | llm-with-rubric | pattern | schema",
+      "accessed_value": "any (OPTIONAL — omit if value contains PII)",
+      "details": "string"
+    }
+  ],
+  "outcome": "pass | violation | pending",
   "signature": "string (HMAC-SHA256 of entry, optional)"
 }
 ```
+
+`outcome` is `pending` when one or more `outcomes` clauses use `at: deferred` and have not yet resolved.
+
+**Outcome resolution entry** — appended when a deferred outcome completes:
+
+```json
+{
+  "entry_type": "outcome_resolution",
+  "run_id": "string (UUID v4, references the original run entry)",
+  "resolution_id": "string (UUID v4)",
+  "timestamp": "string (ISO 8601)",
+  "outcomes_resolved": [
+    {
+      "name": "string",
+      "status": "pass | failed | timed_out",
+      "predicate_type": "exact-match | llm-with-rubric | pattern | schema",
+      "accessed_value": "any (OPTIONAL)",
+      "resolution_ms": "integer (ms elapsed since run completion)",
+      "details": "string"
+    }
+  ],
+  "final_outcome": "pass | violation",
+  "signature": "string (HMAC-SHA256 of entry, optional)"
+}
+```
+
+`timed_out` is written when `window_ms` elapsed before the accessor could return a value. A `timed_out` outcome is treated as `failed` for violation handling purposes.
 
 Audit entries SHOULD be tamper-evident. Implementations SHOULD support HMAC signing with a user-provided key.
 
@@ -649,9 +819,76 @@ See [examples/research-agent.contract.yaml](examples/research-agent.contract.yam
 
 See [examples/gxp-agent.contract.yaml](examples/gxp-agent.contract.yaml)
 
+### Outcome Verification — Refund Agent
+
+```yaml
+agent: refund-processing-agent
+spec-version: 0.2.0
+version: 1.0.0
+description: Verifies both the output and world state after a refund action
+
+must_not:
+  - issue refunds above the authorized limit without human approval
+
+limits:
+  max_latency_ms: 15000
+  max_cost_usd: 0.10
+
+outcomes:
+  - name: refund_status_in_output
+    description: Agent's returned payload must confirm refunded status
+    accessor:
+      type: output_field
+      field: "$.order.status"
+      at: post-run
+    predicate:
+      type: exact-match
+      expected: "refunded"
+    on_fail: block
+
+  - name: refund_tool_succeeded
+    description: process_refund tool must have returned success
+    accessor:
+      type: tool_result
+      tool: process_refund
+      field: "$.success"
+      at: post-run
+    predicate:
+      type: exact-match
+      expected: true
+    on_fail: halt_and_alert
+
+  - name: confirmation_email_dispatched
+    description: Confirmation email must reach the queue within 30 seconds
+    accessor:
+      type: state
+      query: "email_queue.last_entry.status"
+      provider: messaging
+      at: deferred
+      window_ms: 30000
+    predicate:
+      type: exact-match
+      expected: "dispatched"
+    on_fail: warn
+
+on_violation:
+  default: block
+  confirmation_email_dispatched: warn
+```
+
 ---
 
 ## 13. Changelog
+
+### 0.2.0-draft (2026-04-19)
+- Added §5.12 `outcomes` — new top-level clause for world-state verification post-run
+- Defined three accessor types: `output_field`, `tool_result`, `state`
+- Defined four predicate types: `exact-match`, `llm-with-rubric`, `pattern`, `schema`
+- Defined deferred verification protocol: `at: deferred`, `window_ms`, `timed_out`
+- Updated §6.1 evaluation order — `outcomes` now steps 7 (post-run) and 8 (deferred)
+- Updated §7 implementation requirements — `output_field` and `tool_result` are MUST; `state` and deferred are SHOULD
+- Updated §9 audit trail — `run` entry gains `outcome_results` array and `pending` outcome state; new `outcome_resolution` entry type for deferred completions
+- Updated JSON Schema (`schema/contract.schema.json`) — added `outcomes` property and `$defs/outcome`, `$defs/accessor`, `$defs/outcome_predicate`
 
 ### 0.1.0-draft (2026-03-21)
 - Initial draft specification

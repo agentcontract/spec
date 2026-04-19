@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentcontract.github.io/spec/schema/contract.schema.json",
   "title": "AgentContract",
-  "description": "Behavioral contract for an AI agent. AgentContract Specification v0.1.0",
+  "description": "Behavioral contract for an AI agent. AgentContract Specification v0.2.0",
   "type": "object",
   "required": ["agent", "spec-version", "version"],
   "additionalProperties": false,
@@ -125,6 +125,11 @@
         "default": { "$ref": "#/$defs/violation_action" }
       },
       "additionalProperties": { "$ref": "#/$defs/violation_action" }
+    },
+    "outcomes": {
+      "type": "array",
+      "description": "Outcome verifications: checks on world state or structured output after the run.",
+      "items": { "$ref": "#/$defs/outcome" }
     }
   },
   "$defs": {
@@ -189,6 +194,173 @@
               "description": "Action when precondition fails. Default: block."
             },
             "description": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "outcome": {
+      "type": "object",
+      "required": ["name", "accessor", "predicate"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Unique name for this outcome.",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of what this outcome verifies."
+        },
+        "accessor": { "$ref": "#/$defs/accessor" },
+        "predicate": { "$ref": "#/$defs/outcome_predicate" },
+        "on_fail": {
+          "$ref": "#/$defs/violation_action",
+          "description": "Action when this outcome fails. Overrides on_violation.default."
+        }
+      }
+    },
+    "accessor": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["output_field", "tool_result", "state"],
+          "description": "How to obtain the value to verify."
+        },
+        "at": {
+          "type": "string",
+          "enum": ["post-run", "deferred"],
+          "default": "post-run",
+          "description": "When to perform the verification. Default: post-run."
+        },
+        "window_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Required when at: deferred. Max ms to wait before marking outcome as timed_out."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "output_field" } } },
+          "then": {
+            "required": ["field"],
+            "properties": {
+              "field": {
+                "type": "string",
+                "description": "JSONPath expression into the agent's structured output."
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "tool_result" } } },
+          "then": {
+            "required": ["tool"],
+            "properties": {
+              "tool": {
+                "type": "string",
+                "description": "Name of the tool call to inspect."
+              },
+              "call_index": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Which call to this tool (0-indexed). Default: last call."
+              },
+              "field": {
+                "type": "string",
+                "description": "JSONPath expression into the tool result. Omit to use the whole result."
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "state" } } },
+          "then": {
+            "required": ["query"],
+            "properties": {
+              "query": {
+                "type": "string",
+                "description": "State path or query expression. Syntax is provider-defined."
+              },
+              "provider": {
+                "type": "string",
+                "description": "Named state provider registered with the implementation."
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "at": { "const": "deferred" } } },
+          "then": { "required": ["window_ms"] }
+        }
+      ]
+    },
+    "outcome_predicate": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["exact-match", "llm-with-rubric", "pattern", "schema"],
+          "description": "How to evaluate the accessed value."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "exact-match" } } },
+          "then": {
+            "required": ["expected"],
+            "properties": {
+              "expected": {
+                "description": "Exact value the accessor must return (string, number, or boolean)."
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "llm-with-rubric" } } },
+          "then": {
+            "required": ["rubric"],
+            "properties": {
+              "rubric": {
+                "type": "string",
+                "description": "Natural language criterion the judge evaluates the accessed value against."
+              },
+              "judge_model": {
+                "type": "string",
+                "description": "Judge model override. 'fast' uses the implementation's default haiku-class model.",
+                "default": "fast"
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "pattern" } } },
+          "then": {
+            "properties": {
+              "must_match": {
+                "type": "string",
+                "description": "Regex that MUST match the string-coerced accessed value."
+              },
+              "must_not_match": {
+                "type": "string",
+                "description": "Regex that MUST NOT match the string-coerced accessed value."
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "schema" } } },
+          "then": {
+            "required": ["schema"],
+            "properties": {
+              "schema": {
+                "type": "object",
+                "description": "JSON Schema the accessed value must conform to."
+              }
+            }
           }
         }
       ]
